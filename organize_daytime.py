@@ -10,6 +10,12 @@ from datetime import datetime
 # Import from sibling script
 import rename_video_files as rv
 
+# Tesla dashcam filename pattern: YYYY-MM-DD_HH-MM-SS-<camera>.mp4
+_TESLA_DASHCAM_RE = re.compile(
+    r'^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-(front|back|left_repeater|right_repeater|left_pillar|right_pillar|narrow_front)\.mp4$',
+    re.IGNORECASE
+)
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Organize video files by date and time of day (Dawn to Dusk).")
     parser.add_argument("source", help="Source folder containing videos")
@@ -98,10 +104,10 @@ def main():
         print(f"[ERROR] Source folder not found: {args.source}")
         return
 
-    # Default destination to source if not provided
+    # Default destination to Parent Folder if not provided
     if not args.destination:
-        args.destination = args.source
-        print(f"Destination not specified. Organizing into daily folders inside Source.")
+        args.destination = os.path.dirname(os.path.abspath(args.source))
+        print(f"Destination not specified. Organizing into daily folders in Parent Directory: {args.destination}")
 
     try:
         dawn = int(args.dawn)
@@ -124,6 +130,11 @@ def main():
         filename = os.path.basename(f)
         print(f"\nProcessing: {filename}")
         
+        # Skip Tesla dashcam files
+        if _TESLA_DASHCAM_RE.match(filename):
+            print(f"  [SKIP] Tesla dashcam file (ignored)")
+            continue
+        
         dt, time_val = get_datetime_from_filename(filename)
         
         if not dt:
@@ -135,7 +146,7 @@ def main():
             
         if dawn <= time_val <= dusk:
             print(f"  [MATCH] {time_val:04d} (keep)")
-            date_str = dt.strftime("%y%m%d")
+            date_str = dt.strftime("%y%m%d") + "-daytime"
             dest_folder = os.path.join(args.destination, date_str)
             dest_path = os.path.join(dest_folder, filename)
             
