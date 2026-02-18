@@ -386,7 +386,7 @@ def save_srt(segments, path):
             f.write(f"{text}\n\n")
 
 
-def retranscribe(results, transcript_root, model_name="large", force=False):
+def retranscribe(results, transcript_root, model_name="large", force=False, include_junk=False):
     """
     Re-transcribe files classified as 'retranscribe' using the large model.
 
@@ -412,10 +412,19 @@ def retranscribe(results, transcript_root, model_name="large", force=False):
     output_root = os.path.join(parent_dir, output_root_name)
     os.makedirs(output_root, exist_ok=True)
 
-    # Filter to all files with real speech (retranscribe + good)
+    # Setup junk output folder
+    output_root_junk = os.path.join(parent_dir, output_root_name + "_junk")
+    if include_junk:
+        os.makedirs(output_root_junk, exist_ok=True)
+
+    # Filter files to process
+    allowed_classes = ("retranscribe", "good")
+    if include_junk:
+        allowed_classes += ("junk",)
+
     to_process = [
         r for r in results
-        if r["classification"] in ("retranscribe", "good") and r.get("audio_path")
+        if r["classification"] in allowed_classes and r.get("audio_path")
     ]
 
     if not to_process:
@@ -426,7 +435,14 @@ def retranscribe(results, transcript_root, model_name="large", force=False):
     queue = []
     for r in to_process:
         base_name = os.path.splitext(r["rel_path"])[0]
-        out_txt = os.path.join(output_root, base_name + ".txt")
+        
+        # Check specific output folder based on class
+        if r["classification"] == "junk":
+            target_output_root = output_root_junk
+        else:
+            target_output_root = output_root
+
+        out_txt = os.path.join(target_output_root, base_name + ".txt")
 
         if os.path.exists(out_txt) and not force:
             continue
@@ -452,7 +468,9 @@ def retranscribe(results, transcript_root, model_name="large", force=False):
     print(f"RE-TRANSCRIBING {len(queue)} files with '{model_name}' model")
     print(f"  Full file:     {full_file_count}")
     print(f"  Segment-only:  {segment_only_count}")
-    print(f"Output: {output_root}")
+    print(f"  Output:        {output_root}")
+    if include_junk:
+        print(f"  Junk Output:   {output_root_junk}")
     print(f"{'='*60}\n")
 
     # Load model
@@ -490,6 +508,12 @@ def retranscribe(results, transcript_root, model_name="large", force=False):
             and total_segs > 0
             and len(good_segs) < total_segs
         )
+        # Junk files are always full-file retranscribe (since no good segments found)
+        if r["classification"] == "junk":
+            use_segment_mode = False
+            target_root = output_root_junk
+        else:
+            target_root = output_root
 
         mode_label = f"segments {len(good_segs)}/{total_segs}" if use_segment_mode else "full file"
 
@@ -504,13 +528,15 @@ def retranscribe(results, transcript_root, model_name="large", force=False):
 
         print(f"[{i+1}/{len(queue)}] {r['rel_path']}  ({mode_label})  elapsed: {format_eta(elapsed)}{eta_str}")
         print(f"  Audio: {audio_path}")
+        if r["classification"] == "junk":
+             print(f"  Target: [JUNK] {target_root}")
 
         # Ensure output subdirectory exists
-        target_dir = os.path.join(output_root, rel_dir)
+        target_dir = os.path.join(target_root, rel_dir)
         os.makedirs(target_dir, exist_ok=True)
 
-        out_txt = os.path.join(output_root, base_name + ".txt")
-        out_srt = os.path.join(output_root, base_name + ".srt")
+        out_txt = os.path.join(target_root, base_name + ".txt")
+        out_srt = os.path.join(target_root, base_name + ".srt")
 
         try:
             if use_segment_mode:
@@ -614,6 +640,8 @@ Examples:
                         help="Unique word ratio below this = junk (default: 0.3)")
     parser.add_argument("--good-threshold", type=float, default=0.6,
                         help="Unique word ratio above this = good (default: 0.6)")
+    parser.add_argument("--include-junk", action="store_true",
+                        help="Also re-transcribe junk files (saved to *_large_junk folder)")
 
     args = parser.parse_args()
 
@@ -651,6 +679,7 @@ Examples:
         args.transcript_folder,
         model_name=args.model,
         force=args.force,
+        include_junk=args.include_junk,
     )
 
 
