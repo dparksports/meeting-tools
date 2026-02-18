@@ -85,7 +85,11 @@ def is_segment_hallucination(text):
         # Single filler words are hallucination
         fillers = {'yeah', 'yes', 'no', 'oh', 'hmm', 'um', 'uh', 'hey',
                    'now', 'so', 'ok', 'okay', 'whoa', 'wow', 'poop',
-                   'easy', 'hello', 'hi', 'bye', 'thanks', 'thank'}
+                   'easy', 'hello', 'hi', 'bye', 'thanks', 'thank',
+                   'she', 'he', 'the', 'a', 'an', 'i', 'it', 'is',
+                   'to', 'in', 'and', 'of', 'on', 'at', 'my', 'me',
+                   'we', 'they', 'you', 'do', 'be', 'go', 'up',
+                   'shes', 'hes', 'its', 'thats', 'this', 'that'}
         if all(w in fillers for w in words):
             return True
         return False
@@ -607,10 +611,102 @@ def retranscribe(results, transcript_root, model_name="large", force=False, incl
     print(f"  Output:          {output_root}")
     print(f"{'='*60}")
 
+    # --- Post-processing: detect hallucinated output ---
+    junk_moved = post_process_output(output_root, output_root_junk)
+    if junk_moved:
+        print(f"\n[POST-PROCESS] Moved {junk_moved} hallucinated output files to:")
+        print(f"  {output_root_junk}")
 
-# ============================================================
-# CLI
-# ============================================================
+def is_output_hallucination(text, threshold=0.15):
+    """
+    Check if a large-model output text is hallucinated.
+    Returns True if the text appears to be repetitive nonsense.
+    """
+    if not text or not text.strip():
+        return True
+
+    clean = re.sub(r'[^\w\s]', '', text.lower()).strip()
+    words = clean.split()
+
+    if not words:
+        return True
+
+    # Very short transcripts (< 3 words) are suspicious
+    if len(words) < 3:
+        return True
+
+    # Check unique word ratio
+    unique = set(words)
+    unique_ratio = len(unique) / len(words)
+
+    if unique_ratio < threshold:
+        return True
+
+    # Check if one word dominates (> 70%)
+    counts = Counter(words)
+    top_word, top_count = counts.most_common(1)[0]
+    if top_count / len(words) > 0.7:
+        return True
+
+    # Check bigram repetition (consecutive repeated bigrams)
+    if len(words) >= 4:
+        bigrams = [(words[i], words[i+1]) for i in range(len(words)-1)]
+        bigram_counts = Counter(bigrams)
+        top_bg, top_bg_count = bigram_counts.most_common(1)[0]
+        if top_bg_count / len(bigrams) > 0.5:
+            return True
+
+    return False
+
+
+def post_process_output(output_root, junk_root):
+    """
+    Scan all .txt files in output_root. If any are hallucinated,
+    move the .txt and .srt to junk_root.
+    Returns count of files moved.
+    """
+    import shutil
+
+    moved = 0
+    if not os.path.isdir(output_root):
+        return moved
+
+    for dirpath, dirnames, filenames in os.walk(output_root):
+        for fname in filenames:
+            if not fname.endswith('.txt'):
+                continue
+
+            txt_path = os.path.join(dirpath, fname)
+            try:
+                with open(txt_path, 'r', encoding='utf-8', errors='replace') as f:
+                    text = f.read()
+            except Exception:
+                continue
+
+            if not is_output_hallucination(text):
+                continue
+
+            # This is hallucinated output — move to junk
+            rel_path = os.path.relpath(txt_path, output_root)
+            junk_txt = os.path.join(junk_root, rel_path)
+            junk_dir = os.path.dirname(junk_txt)
+            os.makedirs(junk_dir, exist_ok=True)
+
+            # Move .txt
+            shutil.move(txt_path, junk_txt)
+
+            # Move matching .srt if exists
+            srt_path = os.path.splitext(txt_path)[0] + '.srt'
+            if os.path.exists(srt_path):
+                junk_srt = os.path.join(junk_root, os.path.splitext(rel_path)[0] + '.srt')
+                shutil.move(srt_path, junk_srt)
+
+            base = os.path.splitext(fname)[0]
+            print(f"  [JUNK] {rel_path}")
+            moved += 1
+
+    return moved
+
 
 def main():
     parser = argparse.ArgumentParser(
