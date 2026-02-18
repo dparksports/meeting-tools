@@ -1,42 +1,27 @@
-# Virtual Environment
-pymeetings/
-venv/
-env/
-.env
-
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
 
-# Distribution / Packaging
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-*.egg-info/
-.installed.cfg
-*.egg
+# Virtual Environment
+pymeetings/
+venv/
+env/
 
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# VS Code
+# IDE
 .vscode/
+.idea/
 
-# Media Files (optional, but good for video processing repos)
+# Media
 *.mp4
 *.mkv
-*.avi
 *.mov
-*_crop.jpg
-*_crop.png
-*_camera.jpg
-*_camera.png
+*.avi
+*.mp3
+*.wav
+*.jpg
+*.png
+
+# Output/Reports
+*.csv
+ts_frames_*/

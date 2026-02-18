@@ -788,7 +788,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract burned-in timestamps from video files using Qwen2.5-VL-7B")
     parser.add_argument("file", nargs="?", help="Path to video file")
     parser.add_argument("--batch-folder", help="Process all .mp4 files in a folder (batch rename mode)")
-    parser.add_argument("--recursive", action="store_true", help="Include subfolders when using --batch-folder")
+    parser.add_argument("--no-recursive", action="store_false", dest="recursive", help="Disable recursive search (default: enabled)")
     parser.add_argument("--prefix", help="Only process files starting with this prefix (e.g., 'reo')")
     parser.add_argument("--num-frames", type=int, default=5, help="Number of frames to extract (default: 5)")
     parser.add_argument("--crop-ratio", type=float, default=0.08, help="Fraction of frame height to crop from top (default: 0.08)")
