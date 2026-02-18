@@ -149,10 +149,14 @@ def _extract_frames(video_path, num_frames=5):
         "-of", "csv=p=0", video_path
     ]
     try:
-        duration = float(subprocess.check_output(probe_cmd, stderr=subprocess.DEVNULL).decode().strip())
+        output = subprocess.check_output(probe_cmd, stderr=subprocess.DEVNULL).decode().strip()
+        if output == "N/A":
+            duration = 0.0
+        else:
+            duration = float(output)
     except Exception as e:
-        print(f"[ERROR] ffprobe failed: {e}")
-        print("[ERROR] Make sure ffmpeg/ffprobe is installed and on PATH.")
+        print(f"[ERROR] ffprobe failed for {video_path}: {e}")
+        # print("[ERROR] Make sure ffmpeg/ffprobe is installed and on PATH.") # Reduced noise
         return [], 0
 
     if duration <= 0:

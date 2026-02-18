@@ -21,9 +21,9 @@ def format_timestamp(seconds):
 def save_srt(segments, path):
     with open(path, "w", encoding="utf-8") as f:
         for i, segment in enumerate(segments):
-            start = format_timestamp(segment["start"])
-            end = format_timestamp(segment["end"])
-            text = segment["text"].strip()
+            start = format_timestamp(segment.get("start", 0))
+            end = format_timestamp(segment.get("end", 0))
+            text = segment.get("text", "").strip()
             
             f.write(f"{i+1}\n")
             f.write(f"{start} --> {end}\n")
@@ -80,7 +80,6 @@ def run_vad_pass(source_folder, output_root_small, device, recursive=True):
     for i, file_path in enumerate(files):
         print(f"[{i+1}/{len(files)}] Processing: {os.path.basename(file_path)}")
         
-        # Determine output path for Small
         rel_path = os.path.relpath(file_path, root_abs)
         rel_dir = os.path.dirname(rel_path)
         target_dir = os.path.join(output_root_small, rel_dir)
@@ -93,24 +92,20 @@ def run_vad_pass(source_folder, output_root_small, device, recursive=True):
         txt_path = os.path.join(target_dir, base_name + ".txt")
         srt_path = os.path.join(target_dir, base_name + ".srt")
 
-        # Skip if already done
+        # Force re-run if CSV is missing metadata? For now, we overwrite if user deletes CSV.
+        # But logically, checking if CSV exists is fine.
         if os.path.exists(csv_path) and os.path.exists(txt_path):
             print(f"  Skipping (Output exists): {base_name}")
             continue
             
         try:
-            # We use a higher checking threshold to be strict about silence
-            # Also set condition_on_previous_text=False to prevent "looping" hallucinations
+            # Use default parameters as requested
             result_vad = model_vad.transcribe(
                 file_path, 
-                verbose=False, 
-                no_speech_threshold=0.6,
-                condition_on_previous_text=False,
-                compression_ratio_threshold=2.4
+                verbose=False
             )
             segments = result_vad["segments"]
             
-            # Save Small.en Transcript
             with open(txt_path, "w", encoding="utf-8") as f:
                 f.write(result_vad["text"])
             save_srt(segments, srt_path)
@@ -120,39 +115,24 @@ def run_vad_pass(source_folder, output_root_small, device, recursive=True):
                 print("  No speech detected.")
                 continue
 
-            # Save VAD data for Pass 2 (CSV Format)
-            # Headers: start, end, text
-            with open(csv_path, "w", encoding="utf-8", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow(["start", "end", "text"])
-                for seg in segments:
-                    writer.writerow([seg["start"], seg["end"], seg["text"].strip()])
-            
-            # Also save source path reference in a separate small file or just rely on structure?
-            # Creating a meta file might be cleaner, but the user asked for CSV format.
-            # To know source path in Pass 2, we can infer it or store it.
-            # Storing it in a separate meta file for the *folder* or just re-finding source?
-            # Re-finding source is safer. We know the relative path structure.
-            # Actually, let's just create a companion .meta file or similar if needed.
-            # Or pass source path as argument to pass 2?
-            # Wait, Pass 2 iterates output folder.
-            # If we mirror structure, we can reconstruct source path from relative path if we know source root.
-            # But source root is dynamic.
-            # Let's save a simple .meta file alongside or just put source in CSV header comment?
-            # CSV header comment is standard.
-            
-            # Re-write CSV with source comment
+            # Save Extended VAD CSV
             with open(csv_path, "w", encoding="utf-8", newline="") as f:
                 f.write(f"# source_path: {file_path}\n")
                 writer = csv.writer(f)
-                writer.writerow(["start", "end", "text"])
+                writer.writerow(["start", "end", "text", "avg_logprob", "no_speech_prob", "compression_ratio"])
                 for seg in segments:
-                    writer.writerow([seg["start"], seg["end"], seg["text"].strip()])
+                    writer.writerow([
+                        seg["start"], 
+                        seg["end"], 
+                        seg["text"].strip(),
+                        seg.get("avg_logprob", ""),
+                        seg.get("no_speech_prob", ""),
+                        seg.get("compression_ratio", "")
+                    ])
             
         except Exception as e:
             print(f"  [ERROR] Pass 1 failed: {e}")
 
-    # Cleanup
     print("Unloading 'small.en'...")
     del model_vad
     torch.cuda.empty_cache()
@@ -167,7 +147,6 @@ def run_transcription_pass(output_root_small, output_root_large, device):
     print(f"Output: {output_root_large}")
     print("="*50)
     
-    # Scan for .vad.csv files in output_root_small
     csv_files = []
     for root, dirs, files in os.walk(output_root_small):
         for file in files:
@@ -182,7 +161,6 @@ def run_transcription_pass(output_root_small, output_root_large, device):
 
     try:
         print("Loading 'large'...")
-        # User requested specific "large" key
         model_large = whisper.load_model("large", device=device)
     except Exception as e:
         print(f"[ERROR] Could not load large model: {e}")
@@ -195,41 +173,73 @@ def run_transcription_pass(output_root_small, output_root_large, device):
         
         try:
             source_path = None
-            valid_segments = []
+            raw_segments = []
             
-            # Read CSV
             with open(csv_path, "r", encoding="utf-8") as f:
                 lines = f.readlines()
             
-            # Parse source path from first line
             if lines and lines[0].startswith("# source_path:"):
                 source_path = lines[0].split(":", 1)[1].strip()
                 
-            if not source_path:
-                print(f"  [ERROR] Source UUID not found in CSV header")
-                continue
-                
-            if not os.path.exists(source_path):
-                print(f"  [ERROR] Source file not found: {source_path}")
+            if not source_path or not os.path.exists(source_path):
+                print(f"  [ERROR] Source file missing: {source_path}")
                 continue
 
-            # Parse segments (skip header/comments)
+            # Load audio once
+            audio = whisper.load_audio(source_path)
+
             reader = csv.DictReader([line for line in lines if not line.startswith("#")])
+            
+            valid_segments = []
+            seen_texts = set()
+            last_text = ""
+
+            # Filter Logic
             for row in reader:
                 try:
+                    start = float(row["start"])
+                    end = float(row["end"])
+                    text = row["text"].strip()
+                    
+                    # 1. Skip if text is identical to previous segment (Simple Loop)
+                    clean_text = text.lower().replace(".", "").replace(",", "").strip()
+                    if clean_text == last_text:
+                        # print(f"    Skipping repeat: {text[:30]}...")
+                        continue
+                    
+                    # 2. Skip if text is a substring of previous segment (Partial Loop)
+                    if len(clean_text) > 10 and clean_text in last_text:
+                         continue
+                    
+                    # 3. Internal Repetition Check (e.g. "Thank you. Thank you.")
+                    if len(clean_text) > 20:
+                        mid = len(clean_text) // 2
+                        first_half = clean_text[:mid]
+                        second_half = clean_text[mid:]
+                        if first_half in second_half or second_half in first_half:
+                             # print(f"    Skipping internal repeat: {text[:30]}...")
+                             continue
+
+                    # 4. Compression Ratio (Strong indicator of loops)
+                    if compression_ratio > 2.4:
+                        continue
+                    
+                    last_text = clean_text
+
+                    # Simply add to list (NO FILTERING)
                     valid_segments.append({
-                        "start": float(row["start"]),
-                        "end": float(row["end"]),
-                        "text": row["text"]
+                        "start": start,
+                        "end": end,
+                        "text": text
                     })
+
                 except ValueError:
                     continue
-            
-            # Replicate structure in Large folder
+
+            # Check if finals exist
             rel_path = os.path.relpath(csv_path, root_abs_small)
             rel_dir = os.path.dirname(rel_path)
             target_dir = os.path.join(output_root_large, rel_dir)
-            
             if not os.path.exists(target_dir):
                 os.makedirs(target_dir)
                 
@@ -241,9 +251,6 @@ def run_transcription_pass(output_root_small, output_root_large, device):
                 print(f"  Skipping (TXT exists): {txt_path}")
                 continue
 
-            # Load audio for cropping
-            audio = whisper.load_audio(source_path)
-            
             final_segments = []
             
             for seg in valid_segments:
@@ -254,23 +261,21 @@ def run_transcription_pass(output_root_small, output_root_large, device):
                 start_sample = int(start * 16000)
                 end_sample = int(end * 16000)
                 
-                # Safety check for audio length
-                if start_sample >= len(audio):
-                    continue
+                 # Safety check
+                if start_sample >= len(audio): continue
                 end_sample = min(end_sample, len(audio))
                 
                 clip = audio[start_sample:end_sample]
-                if len(clip) < 1600: # Skip clips < 0.1s
-                    continue
+                if len(clip) < 1600: continue
                 
                 # Transcribe clip
                 res_seg = model_large.transcribe(clip, verbose=False)
-                text = res_seg["text"].strip()
+                final_text = res_seg["text"].strip()
                 
                 final_segments.append({
                     "start": start,
                     "end": end,
-                    "text": text
+                    "text": final_text
                 })
 
             # Save Results (Large)
@@ -285,7 +290,6 @@ def run_transcription_pass(output_root_small, output_root_large, device):
         except Exception as e:
             print(f"  [ERROR] Transcription failed: {e}")
 
-    # Cleanup
     print("Unloading 'large'...")
     del model_large
     torch.cuda.empty_cache()
@@ -303,7 +307,6 @@ def main():
         print(f"Error: Folder not found: {args.folder}")
         sys.exit(1)
 
-    # Determine output roots
     root_abs = os.path.abspath(args.folder)
     parent_dir = os.path.dirname(root_abs)
     base_folder = os.path.basename(root_abs)
@@ -318,7 +321,6 @@ def main():
 
     device = check_gpu()
     
-    # Execute batch passes
     run_vad_pass(args.folder, output_root_small, device, recursive=args.recursive)
     run_transcription_pass(output_root_small, output_root_large, device)
     
