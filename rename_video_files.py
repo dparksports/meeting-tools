@@ -80,7 +80,7 @@ _vlm_processor = None
 def _load_vlm():
     """Load Qwen2.5-VL-7B model (cached after first load)."""
     global _vlm_model, _vlm_processor
-    if _vlm_model is not None:
+    if _vlm_model is not None and _vlm_processor is not None:
         return _vlm_model, _vlm_processor
 
     try:
@@ -109,17 +109,25 @@ def _load_vlm():
         dtype = torch.bfloat16 if use_cuda else torch.float32
         device_map = "auto" if use_cuda else "cpu"
 
+        # Temporary locals
+        model = None
+        processor = None
+
         # Try loading from local cache first (no network calls)
         try:
             print(f"[TIMESTAMP] Loading model from cache on {'GPU' if use_cuda else 'CPU'}...")
-            _vlm_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                 model_name,
                 torch_dtype=dtype,
                 device_map=device_map,
                 local_files_only=True,
             )
-            _vlm_processor = AutoProcessor.from_pretrained(model_name, local_files_only=True)
+            processor = AutoProcessor.from_pretrained(model_name, local_files_only=True)
             print("[TIMESTAMP] Model loaded from cache.")
+            
+            # Commit to globals
+            _vlm_model = model
+            _vlm_processor = processor
             return _vlm_model, _vlm_processor
         except Exception:
             pass  # Not cached yet — download below
@@ -127,16 +135,24 @@ def _load_vlm():
         # First time: download from HuggingFace Hub
         print("[TIMESTAMP] Model not cached — downloading (~15 GB, one-time)...")
         print(f"[TIMESTAMP] Loading on {'GPU (CUDA)' if use_cuda else 'CPU'}...")
-        _vlm_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             model_name,
             torch_dtype=dtype,
             device_map=device_map,
         )
-        _vlm_processor = AutoProcessor.from_pretrained(model_name)
+        processor = AutoProcessor.from_pretrained(model_name)
+        
+        # Commit to globals
+        _vlm_model = model
+        _vlm_processor = processor
+        
         print("[TIMESTAMP] Model downloaded and loaded successfully.")
         return _vlm_model, _vlm_processor
     except Exception as e:
         print(f"[ERROR] Failed to load VLM: {e}")
+        # Reset globals just in case
+        _vlm_model = None
+        _vlm_processor = None
         return None, None
 
 
